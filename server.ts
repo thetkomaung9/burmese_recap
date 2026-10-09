@@ -1,10 +1,18 @@
 import express from "express";
 import path from "path";
+import { createServer as createHttpServer } from "http";
 import { fileURLToPath } from "url";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { createServer as createViteServer } from "vite";
-import { GenerateVideosOperation, GoogleGenAI, Type } from "@google/genai";
+import { WebSocketServer } from "ws";
+import {
+  GenerateVideosOperation,
+  GoogleGenAI,
+  LiveServerMessage,
+  Modality,
+  Type,
+} from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -728,7 +736,175 @@ For each shot, provide:
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = createHttpServer(app);
+  const wss = new WebSocketServer({ noServer: true });
+
+  httpServer.on("upgrade", (req, socket, head) => {
+    const reqUrl = req.url || "";
+    if (reqUrl.startsWith("/live")) {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    }
+  });
+
+  // 11. Gemini 3.8 Live API Real-Time Voice Conversation Bridge (/live)
+  wss.on("connection", (clientWs, req) => {
+    const parsedUrl = new URL(req.url || "/live", "http://localhost:3000");
+    const requestedVoice = parsedUrl.searchParams.get("voice") || "Zephyr";
+    const allowedVoices = new Set(["Puck", "Charon", "Kore", "Fenrir", "Zephyr"]);
+    const voiceName = allowedVoices.has(requestedVoice)
+      ? requestedVoice
+      : "Zephyr";
+    const mode = parsedUrl.searchParams.get("mode") || "narrator_coach";
+    const projectTitle =
+      parsedUrl.searchParams.get("projectTitle") || "Movie Recap Project";
+    const myanmarTitle =
+      parsedUrl.searchParams.get("myanmarTitle") || "";
+
+    const modeInstructions: Record<string, string> = {
+      narrator_coach:
+        "Focus on helping the creator craft natural, dramatic spoken Burmese movie recap narration (မြန်မာနောက်ခံစကားပြော), improving pacing for 30fps Smart Sync windows, and refining cliffhangers.",
+      story_analyst:
+        "Focus on character consistency, plot state continuity, and resolving timeline questions for the movie recap.",
+      live_interpreter:
+        "Act as a real-time bilingual English-to-Myanmar movie recap interpreter. When the user speaks an English movie recap line, respond with the natural spoken Burmese narrator translation and brief delivery tips.",
+    };
+
+    const systemInstruction = `You are the RecapMM Studio Live Voice Director powered by Gemini Live.
+Active Movie Recap Project: "${projectTitle}" (${myanmarTitle}).
+Director Mode: ${modeInstructions[mode] || modeInstructions.narrator_coach}
+Speak naturally, concisely, and warmly in English and Burmese (မြန်မာဘာသာ) as requested by the user.`;
+
+    const ai = getGenAIClient();
+    let isClosed = false;
+
+    const sessionPromise = ai.live.connect({
+      model: "gemini-3.8-live",
+      config: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName },
+          },
+        },
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
+        systemInstruction,
+      },
+      callbacks: {
+        onopen: () => {
+          if (clientWs.readyState === clientWs.OPEN) {
+            clientWs.send(
+              JSON.stringify({
+                status: "connected",
+                model: "gemini-3.8-live",
+                voiceName,
+              })
+            );
+          }
+        },
+        onmessage: (message: LiveServerMessage) => {
+          if (clientWs.readyState !== clientWs.OPEN) return;
+
+          const parts = message.serverContent?.modelTurn?.parts || [];
+          for (const part of parts) {
+            const audioBase64 = part.inlineData?.data;
+            if (audioBase64) {
+              clientWs.send(JSON.stringify({ audio: audioBase64 }));
+            }
+            if (part.text) {
+              clientWs.send(JSON.stringify({ modelText: part.text }));
+            }
+          }
+
+          const outTranscript =
+            message.serverContent?.outputTranscription?.text;
+          if (outTranscript) {
+            clientWs.send(
+              JSON.stringify({ outputTranscript: outTranscript })
+            );
+          }
+
+          const inTranscript =
+            message.serverContent?.inputTranscription?.text;
+          if (inTranscript) {
+            clientWs.send(
+              JSON.stringify({ inputTranscript: inTranscript })
+            );
+          }
+
+          if (message.serverContent?.turnComplete) {
+            clientWs.send(JSON.stringify({ turnComplete: true }));
+          }
+
+          if (message.serverContent?.interrupted) {
+            clientWs.send(JSON.stringify({ interrupted: true }));
+          }
+        },
+        onerror: (err: unknown) => {
+          if (clientWs.readyState === clientWs.OPEN) {
+            const msg =
+              err instanceof Error
+                ? err.message
+                : "Gemini Live session error occurred.";
+            clientWs.send(JSON.stringify({ error: msg }));
+          }
+        },
+        onclose: () => {
+          if (!isClosed && clientWs.readyState === clientWs.OPEN) {
+            clientWs.send(JSON.stringify({ status: "disconnected" }));
+          }
+        },
+      },
+    });
+
+    sessionPromise.catch((err: unknown) => {
+      if (clientWs.readyState === clientWs.OPEN) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : "Failed to initialize gemini-3.8-live session.";
+        clientWs.send(JSON.stringify({ error: msg }));
+      }
+    });
+
+    clientWs.on("message", (raw) => {
+      try {
+        const payload = JSON.parse(raw.toString());
+        sessionPromise
+          .then((session) => {
+            if (isClosed) return;
+            if (payload.audio) {
+              session.sendRealtimeInput({
+                audio: {
+                  data: String(payload.audio),
+                  mimeType: "audio/pcm;rate=16000",
+                },
+              });
+            } else if (payload.text) {
+              session.sendRealtimeInput({
+                text: String(payload.text),
+              });
+            }
+          })
+          .catch(() => {});
+      } catch {
+        // Ignore malformed JSON frames
+      }
+    });
+
+    clientWs.on("close", () => {
+      isClosed = true;
+      sessionPromise
+        .then((session) => {
+          session.close();
+        })
+        .catch(() => {});
+    });
+  });
+
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`RecapMM Studio server running on http://0.0.0.0:${PORT}`);
   });
 }

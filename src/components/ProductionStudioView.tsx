@@ -17,6 +17,7 @@ import {
   Layers,
   Upload,
   Video,
+  Mic,
 } from 'lucide-react';
 import { MovieRecapProject } from '../data/recapCatalog';
 import { VideoExportAndVeoModal } from './VideoExportAndVeoModal';
@@ -44,6 +45,7 @@ interface ProductionStudioViewProps {
   onSelectProject: (projectId: string) => void;
   onUpdateProject: (updated: MovieRecapProject) => void;
   onOpenNewJobModal: () => void;
+  onOpenLiveVoiceModal: () => void;
 }
 
 export const ProductionStudioView: React.FC<ProductionStudioViewProps> = ({
@@ -53,6 +55,7 @@ export const ProductionStudioView: React.FC<ProductionStudioViewProps> = ({
   onSelectProject,
   onUpdateProject,
   onOpenNewJobModal,
+  onOpenLiveVoiceModal,
 }) => {
   const [activeSegmentIdx, setActiveSegmentIdx] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -495,6 +498,14 @@ export const ProductionStudioView: React.FC<ProductionStudioViewProps> = ({
           >
             <Video className="w-3.5 h-3.5 text-[#60A5FA]" />
             <span>Generate Scene Video (Veo 3)</span>
+          </button>
+
+          <button
+            onClick={onOpenLiveVoiceModal}
+            className="px-3 py-2 bg-[#161F30] hover:bg-[#1E2B42] border border-[#3B82F6]/50 text-xs font-semibold text-[#60A5FA] rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Mic className="w-3.5 h-3.5 text-[#4ADE80]" />
+            <span>Live Voice Director (3.8 Live)</span>
           </button>
 
           <button

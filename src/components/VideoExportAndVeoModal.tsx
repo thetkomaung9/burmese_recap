@@ -11,8 +11,19 @@ import {
   FileText,
   Volume2,
   Layers,
+  BarChart3,
+  Clock,
 } from 'lucide-react';
 import { MovieRecapProject } from '../data/recapCatalog';
+import { ExportAnalyticsPanel } from './ExportAnalyticsPanel';
+import {
+  EXPORT_HISTORY_EVENT,
+  ExportHistoryEntry,
+  formatBytesReadable,
+  formatExportTimestamp,
+  getExportHistoryForProject,
+  recordProjectExport,
+} from '../utils/exportHistoryStore';
 import {
   AtomicSyncUnit,
   buildSmartSyncPlanJson,
@@ -47,7 +58,12 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
   onUpdateProject,
   onAttachGeneratedVeoVideo,
 }) => {
-  const [activeTab, setActiveTab] = useState<'export' | 'veo'>(initialMode);
+  const [activeTab, setActiveTab] = useState<'export' | 'veo' | 'analytics'>(
+    initialMode
+  );
+  const [projectHistory, setProjectHistory] = useState<ExportHistoryEntry[]>(
+    () => getExportHistoryForProject(project.id)
+  );
 
   // --- FINAL PROJECT VIDEO EXPORT & DOWNLOAD STATE ---
   const [includeAutoTtsBeforeRender, setIncludeAutoTtsBeforeRender] =
@@ -86,6 +102,17 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
   useEffect(() => {
     setActiveTab(initialMode);
   }, [initialMode, isOpen]);
+
+  useEffect(() => {
+    const syncHistory = () => {
+      setProjectHistory(getExportHistoryForProject(project.id));
+    };
+    syncHistory();
+    window.addEventListener(EXPORT_HISTORY_EVENT, syncHistory);
+    return () => {
+      window.removeEventListener(EXPORT_HISTORY_EVENT, syncHistory);
+    };
+  }, [project.id, isOpen]);
 
   useEffect(() => {
     setVeoPrompt(
@@ -516,6 +543,17 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
         `COMPLETE · ${fileName} (${(finalBlob.size / 1048576).toFixed(2)} MB)`
       );
 
+      // Record in Export Analytics History
+      recordProjectExport({
+        projectId: project.id,
+        projectTitle: project.englishTitle,
+        fileName,
+        format: 'VIDEO_WEBM',
+        fileSizeBytes: finalBlob.size,
+        outputRatio: project.overlays.outputRatio,
+        unitCount: project.units.length,
+      });
+
       // Trigger automatic download of the final video
       const a = document.createElement('a');
       a.href = videoUrl;
@@ -626,6 +664,15 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
       setVeoStatusLog(
         `Veo 3 MP4 Ready (${(videoBlob.size / 1048576).toFixed(2)} MB) · ${veoAspectRatio}`
       );
+      recordProjectExport({
+        projectId: project.id,
+        projectTitle: project.englishTitle,
+        fileName: `${project.id}_veo3_${veoAspectRatio.replace(':', 'x')}.mp4`,
+        format: 'VEO_MP4',
+        fileSizeBytes: videoBlob.size,
+        outputRatio: veoAspectRatio,
+        unitCount: project.units.length,
+      });
     } catch (_veoErr: unknown) {
       // Automatic Free-Tier Fallback when Paid API Key is declined or unavailable:
       // Generates a real downloadable 16:9 or 9:16 video from text using gemini-3.8-flash + Burmese TTS + 30fps Canvas compositor
@@ -801,6 +848,15 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
         setVeoStatusLog(
           `Scene Video Ready (${(blob.size / 1048576).toFixed(2)} MB) · ${veoAspectRatio} Free Studio Engine`
         );
+        recordProjectExport({
+          projectId: project.id,
+          projectTitle: project.englishTitle,
+          fileName: `${project.id}_veo3_${veoAspectRatio.replace(':', 'x')}.webm`,
+          format: 'VEO_MP4',
+          fileSizeBytes: blob.size,
+          outputRatio: veoAspectRatio,
+          unitCount: project.units.length,
+        });
       } catch (fallbackErr: unknown) {
         setVeoError(
           fallbackErr instanceof Error
@@ -834,8 +890,22 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
     };
     const srtContent = buildSrtContent(project.units, 'mm_only');
 
-    const triggerDl = (name: string, content: string, type: string) => {
+    const triggerDl = (
+      name: string,
+      content: string,
+      type: string,
+      format: 'PACKAGE_JSON' | 'SUBTITLE_SRT'
+    ) => {
       const b = new Blob([content], { type });
+      recordProjectExport({
+        projectId: project.id,
+        projectTitle: project.englishTitle,
+        fileName: name,
+        format,
+        fileSizeBytes: b.size,
+        outputRatio: project.overlays.outputRatio,
+        unitCount: project.units.length,
+      });
       const u = URL.createObjectURL(b);
       const a = document.createElement('a');
       a.href = u;
@@ -847,17 +917,20 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
     triggerDl(
       `${project.id}_smart_sync_plan.json`,
       JSON.stringify(plan, null, 2),
-      'application/json'
+      'application/json',
+      'PACKAGE_JSON'
     );
     triggerDl(
       `${project.id}_timestamp_translations.json`,
       JSON.stringify(translationsPayload, null, 2),
-      'application/json'
+      'application/json',
+      'PACKAGE_JSON'
     );
     triggerDl(
       `${project.id}_myanmar.srt`,
       srtContent,
-      'text/plain;charset=utf-8'
+      'text/plain;charset=utf-8',
+      'SUBTITLE_SRT'
     );
   };
 
@@ -866,7 +939,7 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
       <div className="w-full max-w-3xl border border-[#242B3A] bg-[#11151E] rounded-xl overflow-hidden shadow-2xl">
         {/* Top Modal Header & Mode Switcher */}
         <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 border-b border-[#1E2430] bg-[#0D1118]">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setActiveTab('export')}
               className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer ${
@@ -889,6 +962,18 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
             >
               <Video className="w-3.5 h-3.5" />
               <span>Generate Video from Text (Veo 3)</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('analytics')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer ${
+                activeTab === 'analytics'
+                  ? 'bg-[#3B82F6] text-white'
+                  : 'bg-[#161C28] text-[#94A3B8] hover:text-white'
+              }`}
+            >
+              <BarChart3 className="w-3.5 h-3.5" />
+              <span>Export History & Analytics ({projectHistory.length})</span>
             </button>
           </div>
 
@@ -1053,6 +1138,33 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
                 </div>
               )}
 
+              {/* Recent Export History Quick Strip */}
+              {projectHistory.length > 0 && (
+                <div className="border border-[#1E2430] bg-[#0B0E14] rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2.5 text-[#CBD5E1] font-mono-tabular">
+                    <Clock className="w-3.5 h-3.5 text-[#60A5FA] shrink-0" />
+                    <span>Latest Export:</span>
+                    <span className="text-white font-semibold truncate max-w-[210px]">
+                      {projectHistory[0].fileName}
+                    </span>
+                    <span className="text-[#4ADE80]">
+                      ({formatBytesReadable(projectHistory[0].fileSizeBytes)})
+                    </span>
+                    <span className="text-[#64748B] hidden sm:inline">
+                      · {formatExportTimestamp(projectHistory[0].timestampIso)}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('analytics')}
+                    className="text-[#60A5FA] hover:text-white font-medium flex items-center gap-1 cursor-pointer shrink-0"
+                  >
+                    <BarChart3 className="w-3.5 h-3.5" />
+                    <span>View History ({projectHistory.length}) →</span>
+                  </button>
+                </div>
+              )}
+
               {/* Action Buttons */}
               <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#1E2430]">
                 <button
@@ -1092,7 +1204,7 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
                 </div>
               </div>
             </div>
-          ) : (
+          ) : activeTab === 'veo' ? (
             /* TAB 2: VEO 3 VIDEO GENERATION FROM TEXT (veo-3.1-fast-generate-preview) */
             <div className="space-y-5">
               <div className="space-y-1">
@@ -1278,6 +1390,13 @@ export const VideoExportAndVeoModal: React.FC<VideoExportAndVeoModalProps> = ({
                 </button>
               </div>
             </div>
+          ) : (
+            /* TAB 3: EXPORT HISTORY & FILE SIZE ANALYTICS */
+            <ExportAnalyticsPanel
+              project={project}
+              history={projectHistory}
+              onSwitchToExportTab={() => setActiveTab('export')}
+            />
           )}
         </div>
       </div>

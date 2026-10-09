@@ -1,6 +1,6 @@
 {
   "name": "RecapMM Studio — English to Myanmar Movie Recap & Smart Sync Platform",
   "description": "Modern web studio and searchable catalog for English-to-Myanmar movie recaps featuring story context memory, natural Burmese narrator translation, TTS voice synthesis, 30fps Smart Sync planning, interactive overlay tools, and advanced multi-faceted discovery.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
